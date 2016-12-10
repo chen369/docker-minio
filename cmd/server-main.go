@@ -363,12 +363,21 @@ func serverMain(c *cli.Context) {
 		cli.ShowCommandHelpAndExit(c, "server", 1)
 	}
 
+	// Set global quiet flag.
+	globalQuiet = c.Bool("quiet") || c.GlobalBool("quiet")
+
 	// Server address.
 	serverAddr := c.String("address")
 
 	// Check if requested port is available.
 	host, portStr, err := net.SplitHostPort(serverAddr)
 	fatalIf(err, "Unable to parse %s.", serverAddr)
+	if portStr == "0" || portStr == "" {
+		// Port zero or empty means use requested to choose any freely available
+		// port. Avoid this since it won't work with any configured clients,
+		// can lead to serious loss of availability.
+		fatalIf(errInvalidArgument, "Invalid port `%s`, please use `--address` to pick a specific port", portStr)
+	}
 	globalMinioHost = host
 
 	// Check if requested port is available.
@@ -385,7 +394,7 @@ func serverMain(c *cli.Context) {
 	fatalIf(err, "Unable to parse storage endpoints %s", c.Args())
 
 	storageDisks, err := initStorageDisks(endpoints)
-	fatalIf(err, "Unable to initialize storage disks.")
+	fatalIf(err, "Unable to initialize storage disk(s).")
 
 	// Cleanup objects that weren't successfully written into the namespace.
 	fatalIf(houseKeeping(storageDisks), "Unable to purge temporary files.")
@@ -445,11 +454,11 @@ func serverMain(c *cli.Context) {
 	}(tls)
 
 	// Wait for formatting of disks.
-	err = waitForFormatDisks(firstDisk, endpoints, storageDisks)
+	formattedDisks, err := waitForFormatDisks(firstDisk, endpoints, storageDisks)
 	fatalIf(err, "formatting storage disks failed")
 
 	// Once formatted, initialize object layer.
-	newObject, err := newObjectLayer(storageDisks)
+	newObject, err := newObjectLayer(formattedDisks)
 	fatalIf(err, "intializing object layer failed")
 
 	globalObjLayerMutex.Lock()

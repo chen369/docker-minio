@@ -18,8 +18,6 @@ package cmd
 
 import (
 	"bytes"
-	"crypto/md5"
-	"encoding/hex"
 	"encoding/xml"
 	"fmt"
 	"io"
@@ -30,6 +28,8 @@ import (
 	"strconv"
 	"sync"
 	"testing"
+
+	humanize "github.com/dustin/go-humanize"
 )
 
 // Type to capture different modifications to API request to simulate failure cases.
@@ -60,7 +60,7 @@ func testAPIHeadObjectHandler(obj ObjectLayer, instanceType, bucketName string, 
 	bytesData := []struct {
 		byteData []byte
 	}{
-		{generateBytesData(6 * 1024 * 1024)},
+		{generateBytesData(6 * humanize.MiByte)},
 	}
 	// set of inputs for uploading the objects before tests for downloading is done.
 	putObjectInputs := []struct {
@@ -207,7 +207,7 @@ func testAPIGetObjectHandler(obj ObjectLayer, instanceType, bucketName string, a
 	bytesData := []struct {
 		byteData []byte
 	}{
-		{generateBytesData(6 * 1024 * 1024)},
+		{generateBytesData(6 * humanize.MiByte)},
 	}
 	// set of inputs for uploading the objects before tests for downloading is done.
 	putObjectInputs := []struct {
@@ -423,9 +423,9 @@ func testAPIPutObjectStreamSigV4Handler(obj ObjectLayer, instanceType, bucketNam
 	credentials credential, t *testing.T) {
 
 	objectName := "test-object"
-	bytesDataLen := 65 * 1024
+	bytesDataLen := 65 * humanize.KiByte
 	bytesData := bytes.Repeat([]byte{'a'}, bytesDataLen)
-	oneKData := bytes.Repeat([]byte("a"), 1024)
+	oneKData := bytes.Repeat([]byte("a"), 1*humanize.KiByte)
 
 	err := initEventNotifier(obj)
 	if err != nil {
@@ -467,7 +467,7 @@ func testAPIPutObjectStreamSigV4Handler(obj ObjectLayer, instanceType, bucketNam
 			objectName:         objectName,
 			data:               bytesData,
 			dataLen:            len(bytesData),
-			chunkSize:          64 * 1024, // 64k
+			chunkSize:          64 * humanize.KiByte,
 			expectedContent:    []byte{},
 			expectedRespStatus: http.StatusOK,
 			accessKey:          credentials.AccessKeyID,
@@ -481,7 +481,7 @@ func testAPIPutObjectStreamSigV4Handler(obj ObjectLayer, instanceType, bucketNam
 			objectName:         objectName,
 			data:               bytesData,
 			dataLen:            len(bytesData),
-			chunkSize:          1 * 1024, // 1k
+			chunkSize:          1 * humanize.KiByte,
 			expectedContent:    []byte{},
 			expectedRespStatus: http.StatusOK,
 			accessKey:          credentials.AccessKeyID,
@@ -495,7 +495,7 @@ func testAPIPutObjectStreamSigV4Handler(obj ObjectLayer, instanceType, bucketNam
 			objectName:         objectName,
 			data:               bytesData,
 			dataLen:            len(bytesData),
-			chunkSize:          64 * 1024, // 64k
+			chunkSize:          64 * humanize.KiByte,
 			expectedContent:    []byte{},
 			expectedRespStatus: http.StatusForbidden,
 			accessKey:          "",
@@ -509,7 +509,7 @@ func testAPIPutObjectStreamSigV4Handler(obj ObjectLayer, instanceType, bucketNam
 			objectName:         objectName,
 			data:               bytesData,
 			dataLen:            len(bytesData),
-			chunkSize:          64 * 1024, // 64k
+			chunkSize:          64 * humanize.KiByte,
 			expectedContent:    []byte{},
 			expectedRespStatus: http.StatusBadRequest,
 			accessKey:          credentials.AccessKeyID,
@@ -524,7 +524,7 @@ func testAPIPutObjectStreamSigV4Handler(obj ObjectLayer, instanceType, bucketNam
 			objectName:         objectName,
 			data:               bytesData,
 			dataLen:            len(bytesData),
-			chunkSize:          100 * 1024, // 100k
+			chunkSize:          100 * humanize.KiByte,
 			expectedContent:    []byte{},
 			expectedRespStatus: http.StatusOK,
 			accessKey:          credentials.AccessKeyID,
@@ -698,7 +698,7 @@ func testAPIPutObjectHandler(obj ObjectLayer, instanceType, bucketName string, a
 	}
 	objectName := "test-object"
 	// byte data for PutObject.
-	bytesData := generateBytesData(6 * 1024 * 1024)
+	bytesData := generateBytesData(6 * humanize.KiByte)
 
 	copySourceHeader := http.Header{}
 	copySourceHeader.Set("X-Amz-Copy-Source", "somewhere")
@@ -942,7 +942,7 @@ func testAPICopyObjectHandler(obj ObjectLayer, instanceType, bucketName string, 
 	bytesData := []struct {
 		byteData []byte
 	}{
-		{generateBytesData(6 * 1024 * 1024)},
+		{generateBytesData(6 * humanize.KiByte)},
 	}
 
 	buffers := []*bytes.Buffer{
@@ -1385,13 +1385,6 @@ func testAPICompleteMultipartHandler(obj ObjectLayer, instanceType, bucketName s
 		t.Fatal("Notifier initialization failed.")
 	}
 
-	// Calculates MD5 sum of the given byte array.
-	findMD5 := func(toBeHashed []byte) string {
-		hasher := md5.New()
-		hasher.Write(toBeHashed)
-		return hex.EncodeToString(hasher.Sum(nil))
-	}
-
 	// object used for the test.
 	objectName := "test-object-new-multipart"
 
@@ -1413,8 +1406,8 @@ func testAPICompleteMultipartHandler(obj ObjectLayer, instanceType, bucketName s
 
 	// Parts with size greater than 5 MB.
 	// Generating a 6MB byte array.
-	validPart := bytes.Repeat([]byte("abcdef"), 1024*1024)
-	validPartMD5 := findMD5(validPart)
+	validPart := bytes.Repeat([]byte("abcdef"), 1*humanize.MiByte)
+	validPartMD5 := getMD5Hash(validPart)
 	// Create multipart parts.
 	// Need parts to be uploaded before CompleteMultiPartUpload can be called tested.
 	parts := []struct {
@@ -1747,13 +1740,6 @@ func testAPIAbortMultipartHandler(obj ObjectLayer, instanceType, bucketName stri
 		t.Fatal("Notifier initialization failed.")
 	}
 
-	// Calculates MD5 sum of the given byte array.
-	findMD5 := func(toBeHashed []byte) string {
-		hasher := md5.New()
-		hasher.Write(toBeHashed)
-		return hex.EncodeToString(hasher.Sum(nil))
-	}
-
 	// object used for the test.
 	objectName := "test-object-new-multipart"
 
@@ -1775,8 +1761,8 @@ func testAPIAbortMultipartHandler(obj ObjectLayer, instanceType, bucketName stri
 
 	// Parts with size greater than 5 MB.
 	// Generating a 6MB byte array.
-	validPart := bytes.Repeat([]byte("abcdef"), 1024*1024)
-	validPartMD5 := findMD5(validPart)
+	validPart := bytes.Repeat([]byte("abcdef"), 1*humanize.MiByte)
+	validPartMD5 := getMD5Hash(validPart)
 	// Create multipart parts.
 	// Need parts to be uploaded before AbortMultiPartUpload can be called tested.
 	parts := []struct {
@@ -1930,7 +1916,7 @@ func testAPIDeleteObjectHandler(obj ObjectLayer, instanceType, bucketName string
 	bytesData := []struct {
 		byteData []byte
 	}{
-		{generateBytesData(6 * 1024 * 1024)},
+		{generateBytesData(6 * humanize.MiByte)},
 	}
 
 	// set of inputs for uploading the objects before tests for deleting them is done.

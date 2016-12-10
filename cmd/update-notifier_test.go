@@ -1,7 +1,5 @@
-// +build windows
-
 /*
- * Minio Cloud Storage, (C) 2016 Minio, Inc.
+ * Minio Cloud Storage, (C) 2015 Minio, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -18,13 +16,20 @@
 
 package cmd
 
-type syslogLogger struct {
-	Enable bool   `json:"enable"`
-	Addr   string `json:"address"`
-	Level  string `json:"level"`
-}
+import (
+	"strings"
+	"testing"
+	"time"
+)
 
-// enableSyslogLogger - unsupported on windows.
-func enableSyslogLogger(raddr string) {
-	fatalIf(errSyslogNotSupported, "Unable to enable syslog.")
+// Tests update notifier string builder.
+func TestUpdateNotifier(t *testing.T) {
+	updateMsg := minioUpdateStableURL
+	colorUpdateMsg := colorizeUpdateMessage(updateMsg, time.Duration(72*time.Hour))
+	if strings.Index(colorUpdateMsg, "minutes") == -1 {
+		t.Fatal("Duration string not found in colorized update message", colorUpdateMsg)
+	}
+	if strings.Index(colorUpdateMsg, updateMsg) == -1 {
+		t.Fatal("Update message not found in colorized update message", updateMsg)
+	}
 }

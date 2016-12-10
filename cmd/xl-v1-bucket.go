@@ -17,10 +17,15 @@
 package cmd
 
 import (
-	"path"
 	"sort"
 	"sync"
 )
+
+// list all errors that can be ignore in a bucket operation.
+var bucketOpIgnoredErrs = append(baseIgnoredErrs, errDiskAccessDenied)
+
+// list all errors that can be ignored in a bucket metadata operation.
+var bucketMetadataOpIgnoredErrs = append(bucketOpIgnoredErrs, errVolumeNotFound)
 
 /// Bucket operations
 
@@ -69,11 +74,7 @@ func (xl xlObjects) MakeBucket(bucket string) error {
 	}
 
 	// Verify we have any other errors which should undo make bucket.
-	if reducedErr := reduceErrs(dErrs, []error{
-		errDiskNotFound,
-		errFaultyDisk,
-		errDiskAccessDenied,
-	}); reducedErr != nil {
+	if reducedErr := reduceWriteQuorumErrs(dErrs, bucketOpIgnoredErrs, xl.writeQuorum); reducedErr != nil {
 		return toObjectErr(reducedErr, bucket)
 	}
 	return nil
@@ -120,14 +121,6 @@ func undoMakeBucket(storageDisks []StorageAPI, bucket string) {
 	wg.Wait()
 }
 
-// list all errors that can be ignored in a bucket metadata operation.
-var bucketMetadataOpIgnoredErrs = []error{
-	errDiskNotFound,
-	errDiskAccessDenied,
-	errFaultyDisk,
-	errVolumeNotFound,
-}
-
 // getBucketInfo - returns the BucketInfo from one of the load balanced disks.
 func (xl xlObjects) getBucketInfo(bucketName string) (bucketInfo BucketInfo, err error) {
 	for _, disk := range xl.getLoadBalancedDisks() {
@@ -145,7 +138,7 @@ func (xl xlObjects) getBucketInfo(bucketName string) (bucketInfo BucketInfo, err
 		}
 		err = traceError(err)
 		// For any reason disk went offline continue and pick the next one.
-		if isErrIgnored(err, bucketMetadataOpIgnoredErrs) {
+		if isErrIgnored(err, bucketMetadataOpIgnoredErrs...) {
 			continue
 		}
 		break
@@ -221,7 +214,7 @@ func (xl xlObjects) listBuckets() (bucketsInfo []BucketInfo, err error) {
 			return bucketsInfo, nil
 		}
 		// Ignore any disks not found.
-		if isErrIgnored(err, bucketMetadataOpIgnoredErrs) {
+		if isErrIgnored(err, bucketMetadataOpIgnoredErrs...) {
 			continue
 		}
 		break
@@ -272,7 +265,7 @@ func (xl xlObjects) DeleteBucket(bucket string) error {
 				return
 			}
 			// Cleanup all the previously incomplete multiparts.
-			err = cleanupDir(disk, path.Join(minioMetaBucket, mpartMetaPrefix), bucket)
+			err = cleanupDir(disk, minioMetaMultipartBucket, bucket)
 			if err != nil {
 				if errorCause(err) == errVolumeNotFound {
 					return
@@ -290,11 +283,7 @@ func (xl xlObjects) DeleteBucket(bucket string) error {
 		return toObjectErr(traceError(errXLWriteQuorum), bucket)
 	}
 
-	if reducedErr := reduceErrs(dErrs, []error{
-		errFaultyDisk,
-		errDiskNotFound,
-		errDiskAccessDenied,
-	}); reducedErr != nil {
+	if reducedErr := reduceWriteQuorumErrs(dErrs, bucketOpIgnoredErrs, xl.writeQuorum); reducedErr != nil {
 		return toObjectErr(reducedErr, bucket)
 	}
 

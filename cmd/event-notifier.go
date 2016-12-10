@@ -18,7 +18,6 @@ package cmd
 
 import (
 	"bytes"
-	"encoding/hex"
 	"encoding/json"
 	"encoding/xml"
 	"fmt"
@@ -401,7 +400,7 @@ func persistNotificationConfig(bucket string, ncfg *notificationConfig, obj Obje
 	// build path
 	ncPath := path.Join(bucketConfigPrefix, bucket, bucketNotificationConfig)
 	// write object to path
-	sha256Sum := hex.EncodeToString(sum256(buf))
+	sha256Sum := getSHA256Hash(buf)
 	_, err = obj.PutObject(minioMetaBucket, ncPath, int64(len(buf)), bytes.NewReader(buf), nil, sha256Sum)
 	if err != nil {
 		errorIf(err, "Unable to write bucket notification configuration.")
@@ -421,7 +420,7 @@ func persistListenerConfig(bucket string, lcfg []listenerConfig, obj ObjectLayer
 	// build path
 	lcPath := path.Join(bucketConfigPrefix, bucket, bucketListenerConfig)
 	// write object to path
-	sha256Sum := hex.EncodeToString(sum256(buf))
+	sha256Sum := getSHA256Hash(buf)
 	_, err = obj.PutObject(minioMetaBucket, lcPath, int64(len(buf)), bytes.NewReader(buf), nil, sha256Sum)
 	if err != nil {
 		errorIf(err, "Unable to write bucket listener configuration to object layer.")
@@ -439,22 +438,15 @@ func removeListenerConfig(bucket string, objAPI ObjectLayer) error {
 
 // Loads both notification and listener config.
 func loadNotificationAndListenerConfig(bucketName string, objAPI ObjectLayer) (nCfg *notificationConfig, lCfg []listenerConfig, err error) {
-	nConfigErrs := []error{
-		// When no previous notification configs were found.
-		errNoSuchNotifications,
-		// net.Dial fails for rpc client or any
-		// other unexpected errors during net.Dial.
-		errDiskNotFound,
-	}
 	// Loads notification config if any.
 	nCfg, err = loadNotificationConfig(bucketName, objAPI)
-	if err != nil && !isErrIgnored(err, nConfigErrs) {
+	if err != nil && !isErrIgnored(err, errDiskNotFound, errNoSuchNotifications) {
 		return nil, nil, err
 	}
 
 	// Loads listener config if any.
 	lCfg, err = loadListenerConfig(bucketName, objAPI)
-	if err != nil && !isErrIgnored(err, nConfigErrs) {
+	if err != nil && !isErrIgnored(err, errDiskNotFound, errNoSuchNotifications) {
 		return nil, nil, err
 	}
 	return nCfg, lCfg, nil

@@ -69,9 +69,9 @@ func (u *uploadsV1) RemoveUploadID(uploadID string) {
 
 // readUploadsJSON - get all the saved uploads JSON.
 func readUploadsJSON(bucket, object string, disk StorageAPI) (uploadIDs uploadsV1, err error) {
-	uploadJSONPath := path.Join(mpartMetaPrefix, bucket, object, uploadsJSONFile)
+	uploadJSONPath := path.Join(bucket, object, uploadsJSONFile)
 	// Reads entire `uploads.json`.
-	buf, err := disk.ReadAll(minioMetaBucket, uploadJSONPath)
+	buf, err := disk.ReadAll(minioMetaMultipartBucket, uploadJSONPath)
 	if err != nil {
 		return uploadsV1{}, traceError(err)
 	}
@@ -93,17 +93,6 @@ func newUploadsV1(format string) uploadsV1 {
 	return uploadIDs
 }
 
-// uploadIDChange - represents a change to uploads.json - either add
-// or remove an upload id.
-type uploadIDChange struct {
-	// the id being added or removed.
-	uploadID string
-	// time of upload start. only used in uploadid add operations.
-	initiated time.Time
-	// if true, removes uploadID and ignores initiated time.
-	isRemove bool
-}
-
 func writeUploadJSON(u *uploadsV1, uploadsPath, tmpPath string, disk StorageAPI) error {
 	// Serialize to prepare to write to disk.
 	uplBytes, wErr := json.Marshal(&u)
@@ -113,12 +102,12 @@ func writeUploadJSON(u *uploadsV1, uploadsPath, tmpPath string, disk StorageAPI)
 
 	// Write `uploads.json` to disk. First to tmp location and
 	// then rename.
-	if wErr = disk.AppendFile(minioMetaBucket, tmpPath, uplBytes); wErr != nil {
+	if wErr = disk.AppendFile(minioMetaTmpBucket, tmpPath, uplBytes); wErr != nil {
 		return traceError(wErr)
 	}
-	wErr = disk.RenameFile(minioMetaBucket, tmpPath, minioMetaBucket, uploadsPath)
+	wErr = disk.RenameFile(minioMetaTmpBucket, tmpPath, minioMetaMultipartBucket, uploadsPath)
 	if wErr != nil {
-		if dErr := disk.DeleteFile(minioMetaBucket, tmpPath); dErr != nil {
+		if dErr := disk.DeleteFile(minioMetaTmpBucket, tmpPath); dErr != nil {
 			// we return the most recent error.
 			return traceError(dErr)
 		}
@@ -133,7 +122,7 @@ func cleanupUploadedParts(bucket, object, uploadID string, storageDisks ...Stora
 	var wg = &sync.WaitGroup{}
 
 	// Construct uploadIDPath.
-	uploadIDPath := path.Join(mpartMetaPrefix, bucket, object, uploadID)
+	uploadIDPath := path.Join(bucket, object, uploadID)
 
 	// Cleanup uploadID for all disks.
 	for index, disk := range storageDisks {
@@ -145,7 +134,7 @@ func cleanupUploadedParts(bucket, object, uploadID string, storageDisks ...Stora
 		// Cleanup each uploadID in a routine.
 		go func(index int, disk StorageAPI) {
 			defer wg.Done()
-			err := cleanupDir(disk, minioMetaBucket, uploadIDPath)
+			err := cleanupDir(disk, minioMetaMultipartBucket, uploadIDPath)
 			if err != nil {
 				errs[index] = err
 				return

@@ -21,7 +21,6 @@ import (
 	"fmt"
 	"os"
 	"sort"
-	"strings"
 	"time"
 
 	"github.com/minio/cli"
@@ -168,10 +167,15 @@ func Main() {
 
 		// Initialize config.
 		configCreated, err := initConfig()
-		fatalIf(err, "Unable to initialize minio config.")
+		if err != nil {
+			console.Fatalf("Unable to initialize minio config. Err: %s.\n", err)
+		}
 		if configCreated {
 			console.Println("Created minio configuration file at " + mustGetConfigPath())
 		}
+
+		// Enable all loggers by now so we can use errorIf() and fatalIf()
+		enableLoggers()
 
 		// Fetch access keys from environment variables and update the config.
 		accessKey := os.Getenv("MINIO_ACCESS_KEY")
@@ -190,9 +194,6 @@ func Main() {
 			fatalIf(errInvalidArgument, "Invalid secret key. Accept only a string containing from 8 to 40 characters.")
 		}
 
-		// Enable all loggers by now.
-		enableLoggers()
-
 		// Init the error tracing module.
 		initError()
 
@@ -201,7 +202,7 @@ func Main() {
 
 		// Do not print update messages, if quiet flag is set.
 		if !globalQuiet {
-			if strings.HasPrefix(ReleaseTag, "RELEASE.") && c.Args().Get(0) != "update" {
+			if c.Args().Get(0) != "update" {
 				updateMsg, _, err := getReleaseUpdate(minioUpdateStableURL, 1*time.Second)
 				if err != nil {
 					// Ignore any errors during getReleaseUpdate(), possibly

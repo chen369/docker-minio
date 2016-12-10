@@ -18,7 +18,6 @@ package cmd
 
 import (
 	"bytes"
-	"errors"
 	"io"
 	"io/ioutil"
 	"os"
@@ -30,12 +29,13 @@ import (
 	"sync/atomic"
 	"syscall"
 
+	humanize "github.com/dustin/go-humanize"
 	"github.com/minio/minio/pkg/disk"
 )
 
 const (
-	fsMinFreeSpace    = 1024 * 1024 * 1024 // Min 1GiB free space.
-	fsMinFreeInodes   = 10000              // Min 10000.
+	fsMinFreeSpace    = 1 * humanize.GiByte // Min 1GiB free space.
+	fsMinFreeInodes   = 10000               // Min 10000.
 	maxAllowedIOError = 5
 )
 
@@ -47,8 +47,6 @@ type posix struct {
 	minFreeInodes int64
 	pool          sync.Pool
 }
-
-var errFaultyDisk = errors.New("Faulty disk")
 
 // checkPathLength - returns error if given path name length more than 255
 func checkPathLength(pathName string) error {
@@ -193,6 +191,16 @@ func (s *posix) checkDiskFree() (err error) {
 // Implements stringer compatible interface.
 func (s *posix) String() string {
 	return s.diskPath
+}
+
+// Init - this is a dummy call.
+func (s *posix) Init() error {
+	return nil
+}
+
+// Close - this is a dummy call.
+func (s *posix) Close() error {
+	return nil
 }
 
 // DiskInfo provides current information about disk space usage,
@@ -497,8 +505,11 @@ func (s *posix) ReadAll(volume, path string) (buf []byte, err error) {
 // ReadFile reads exactly len(buf) bytes into buf. It returns the
 // number of bytes copied. The error is EOF only if no bytes were
 // read. On return, n == len(buf) if and only if err == nil. n == 0
-// for io.EOF. Additionally ReadFile also starts reading from an
-// offset.
+// for io.EOF.
+// If an EOF happens after reading some but not all the bytes,
+// ReadFull returns ErrUnexpectedEOF.
+// Additionally ReadFile also starts reading from an offset.
+// ReadFile symantics are same as io.ReadFull
 func (s *posix) ReadFile(volume string, path string, offset int64, buf []byte) (n int64, err error) {
 	defer func() {
 		if err == syscall.EIO {
@@ -944,5 +955,11 @@ func (s *posix) RenameFile(srcVolume, srcPath, dstVolume, dstPath string) (err e
 		}
 		return err
 	}
+
+	// Remove parent dir of the source file if empty
+	if parentDir := slashpath.Dir(preparePath(srcFilePath)); isDirEmpty(parentDir) {
+		deleteFile(srcVolumeDir, parentDir)
+	}
+
 	return nil
 }

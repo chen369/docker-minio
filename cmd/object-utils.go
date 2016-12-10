@@ -17,7 +17,6 @@
 package cmd
 
 import (
-	"crypto/md5"
 	"encoding/hex"
 	"fmt"
 	"io"
@@ -34,8 +33,10 @@ const (
 	minioMetaBucket = ".minio.sys"
 	// Multipart meta prefix.
 	mpartMetaPrefix = "multipart"
-	// Tmp meta prefix.
-	tmpMetaPrefix = "tmp"
+	// Minio Multipart meta prefix.
+	minioMetaMultipartBucket = minioMetaBucket + "/" + mpartMetaPrefix
+	// Minio Tmp meta prefix.
+	minioMetaTmpBucket = minioMetaBucket + "/tmp"
 )
 
 // validBucket regexp.
@@ -126,18 +127,14 @@ func pathJoin(elem ...string) string {
 	return path.Join(elem...) + trailingSlash
 }
 
-// getUUID() - get a unique uuid.
-func getUUID() (uuidStr string) {
-	for {
-		uuid, err := uuid.New()
-		if err != nil {
-			errorIf(err, "Unable to initialize uuid")
-			continue
-		}
-		uuidStr = uuid.String()
-		break
+// mustGetUUID - get a random UUID.
+func mustGetUUID() string {
+	uuid, err := uuid.New()
+	if err != nil {
+		panic(fmt.Sprintf("Random UUID generation failed. Error: %s", err))
 	}
-	return uuidStr
+
+	return uuid.String()
 }
 
 // Create an s3 compatible MD5sum for complete multipart transaction.
@@ -150,9 +147,7 @@ func getCompleteMultipartMD5(parts []completePart) (string, error) {
 		}
 		finalMD5Bytes = append(finalMD5Bytes, md5Bytes...)
 	}
-	md5Hasher := md5.New()
-	md5Hasher.Write(finalMD5Bytes)
-	s3MD5 := fmt.Sprintf("%s-%d", hex.EncodeToString(md5Hasher.Sum(nil)), len(parts))
+	s3MD5 := fmt.Sprintf("%s-%d", getMD5Hash(finalMD5Bytes), len(parts))
 	return s3MD5, nil
 }
 
@@ -163,27 +158,25 @@ func (d byBucketName) Len() int           { return len(d) }
 func (d byBucketName) Swap(i, j int)      { d[i], d[j] = d[j], d[i] }
 func (d byBucketName) Less(i, j int) bool { return d[i].Name < d[j].Name }
 
-// Copied from io.LimitReader()
-// limitReader returns a Reader that reads from r
-// but returns error after n bytes.
-// The underlying implementation is a *LimitedReader.
-type limitedReader struct {
-	R io.Reader // underlying reader
-	M int64     // min bytes remaining
-	N int64     // max bytes remaining
+// rangeReader returns a Reader that reads from r
+// but returns error after Max bytes read as errDataTooLarge.
+// but returns error if reader exits before reading Min bytes
+// errDataTooSmall.
+type rangeReader struct {
+	Reader io.Reader // underlying reader
+	Min    int64     // min bytes remaining
+	Max    int64     // max bytes remaining
 }
 
-func limitReader(r io.Reader, m, n int64) io.Reader { return &limitedReader{r, m, n} }
-
-func (l *limitedReader) Read(p []byte) (n int, err error) {
-	n, err = l.R.Read(p)
-	l.N -= int64(n)
-	l.M -= int64(n)
-	if l.N < 0 {
+func (l *rangeReader) Read(p []byte) (n int, err error) {
+	n, err = l.Reader.Read(p)
+	l.Max -= int64(n)
+	l.Min -= int64(n)
+	if l.Max < 0 {
 		// If more data is available than what is expected we return error.
 		return 0, errDataTooLarge
 	}
-	if err == io.EOF && l.M > 0 {
+	if err == io.EOF && l.Min > 0 {
 		return 0, errDataTooSmall
 	}
 	return

@@ -37,6 +37,9 @@ type fsObjects struct {
 
 	// List pool management.
 	listPool *treeWalkPool
+
+	// To manage the appendRoutine go0routines
+	bgAppend *backgroundAppend
 }
 
 // list of all errors that can be ignored in tree walk operation in FS
@@ -57,10 +60,18 @@ func newFSObjects(storage StorageAPI) (ObjectLayer, error) {
 		return nil, fmt.Errorf("Unable to recognize backend format, %s", err)
 	}
 
+	// Initialize meta volume, if volume already exists ignores it.
+	if err = initMetaVolume([]StorageAPI{storage}); err != nil {
+		return nil, fmt.Errorf("Unable to initialize '.minio.sys' meta volume, %s", err)
+	}
+
 	// Initialize fs objects.
 	fs := fsObjects{
 		storage:  storage,
 		listPool: newTreeWalkPool(globalLookupTimeout),
+		bgAppend: &backgroundAppend{
+			infoMap: make(map[string]bgAppendPartsInfo),
+		},
 	}
 
 	// Return successfully initialized object layer.
@@ -183,7 +194,7 @@ func (fs fsObjects) DeleteBucket(bucket string) error {
 		return toObjectErr(traceError(err), bucket)
 	}
 	// Cleanup all the previously incomplete multiparts.
-	if err := cleanupDir(fs.storage, path.Join(minioMetaBucket, mpartMetaPrefix), bucket); err != nil && errorCause(err) != errVolumeNotFound {
+	if err := cleanupDir(fs.storage, minioMetaMultipartBucket, bucket); err != nil && errorCause(err) != errVolumeNotFound {
 		return toObjectErr(err, bucket)
 	}
 	return nil
@@ -348,12 +359,12 @@ func (fs fsObjects) PutObject(bucket string, object string, size int64, data io.
 		metadata = make(map[string]string)
 	}
 
-	uniqueID := getUUID()
+	uniqueID := mustGetUUID()
 
 	// Uploaded object will first be written to the temporary location which will eventually
 	// be renamed to the actual location. It is first written to the temporary location
 	// so that cleaning it up will be easy if the server goes down.
-	tempObj := path.Join(tmpMetaPrefix, uniqueID)
+	tempObj := uniqueID
 
 	// Initialize md5 writer.
 	md5Writer := md5.New()
@@ -379,16 +390,16 @@ func (fs fsObjects) PutObject(bucket string, object string, size int64, data io.
 
 	if size == 0 {
 		// For size 0 we write a 0byte file.
-		err = fs.storage.AppendFile(minioMetaBucket, tempObj, []byte(""))
+		err = fs.storage.AppendFile(minioMetaTmpBucket, tempObj, []byte(""))
 		if err != nil {
-			fs.storage.DeleteFile(minioMetaBucket, tempObj)
+			fs.storage.DeleteFile(minioMetaTmpBucket, tempObj)
 			return ObjectInfo{}, toObjectErr(traceError(err), bucket, object)
 		}
 	} else {
 
 		// Prepare file to avoid disk fragmentation
 		if size > 0 {
-			err = fs.storage.PrepareFile(minioMetaBucket, tempObj, size)
+			err = fs.storage.PrepareFile(minioMetaTmpBucket, tempObj, size)
 			if err != nil {
 				return ObjectInfo{}, toObjectErr(err, bucket, object)
 			}
@@ -402,9 +413,9 @@ func (fs fsObjects) PutObject(bucket string, object string, size int64, data io.
 		buf := make([]byte, int(bufSize))
 		teeReader := io.TeeReader(limitDataReader, multiWriter)
 		var bytesWritten int64
-		bytesWritten, err = fsCreateFile(fs.storage, teeReader, buf, minioMetaBucket, tempObj)
+		bytesWritten, err = fsCreateFile(fs.storage, teeReader, buf, minioMetaTmpBucket, tempObj)
 		if err != nil {
-			fs.storage.DeleteFile(minioMetaBucket, tempObj)
+			fs.storage.DeleteFile(minioMetaTmpBucket, tempObj)
 			errorIf(err, "Failed to create object %s/%s", bucket, object)
 			return ObjectInfo{}, toObjectErr(err, bucket, object)
 		}
@@ -412,14 +423,14 @@ func (fs fsObjects) PutObject(bucket string, object string, size int64, data io.
 		// Should return IncompleteBody{} error when reader has fewer
 		// bytes than specified in request header.
 		if bytesWritten < size {
-			fs.storage.DeleteFile(minioMetaBucket, tempObj)
+			fs.storage.DeleteFile(minioMetaTmpBucket, tempObj)
 			return ObjectInfo{}, traceError(IncompleteBody{})
 		}
 	}
 	// Delete the temporary object in the case of a
 	// failure. If PutObject succeeds, then there would be
 	// nothing to delete.
-	defer fs.storage.DeleteFile(minioMetaBucket, tempObj)
+	defer fs.storage.DeleteFile(minioMetaTmpBucket, tempObj)
 
 	newMD5Hex := hex.EncodeToString(md5Writer.Sum(nil))
 	// Update the md5sum if not set with the newly calculated one.
@@ -449,7 +460,7 @@ func (fs fsObjects) PutObject(bucket string, object string, size int64, data io.
 	defer objectLock.RUnlock()
 
 	// Entire object was written to the temp location, now it's safe to rename it to the actual location.
-	err = fs.storage.RenameFile(minioMetaBucket, tempObj, bucket, object)
+	err = fs.storage.RenameFile(minioMetaTmpBucket, tempObj, bucket, object)
 	if err != nil {
 		return ObjectInfo{}, toObjectErr(traceError(err), bucket, object)
 	}

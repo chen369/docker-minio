@@ -32,6 +32,14 @@ import (
 	"github.com/minio/minio/pkg/objcache"
 )
 
+// list all errors which can be ignored in object operations.
+var objectOpIgnoredErrs = []error{
+	errDiskNotFound,
+	errDiskAccessDenied,
+	errFaultyDisk,
+	errFaultyRemoteDisk,
+}
+
 /// Object Operations
 
 // GetObject - reads an object erasured coded across multiple
@@ -71,11 +79,7 @@ func (xl xlObjects) GetObject(bucket, object string, startOffset int64, length i
 		return traceError(InsufficientReadQuorum{}, errs...)
 	}
 
-	if reducedErr := reduceErrs(errs, []error{
-		errDiskNotFound,
-		errFaultyDisk,
-		errDiskAccessDenied,
-	}); reducedErr != nil {
+	if reducedErr := reduceReadQuorumErrs(errs, objectOpIgnoredErrs, xl.readQuorum); reducedErr != nil {
 		return toObjectErr(reducedErr, bucket, object)
 	}
 
@@ -83,7 +87,10 @@ func (xl xlObjects) GetObject(bucket, object string, startOffset int64, length i
 	onlineDisks, modTime := listOnlineDisks(xl.storageDisks, metaArr, errs)
 
 	// Pick latest valid metadata.
-	xlMeta := pickValidXLMeta(metaArr, modTime)
+	xlMeta, err := pickValidXLMeta(metaArr, modTime)
+	if err != nil {
+		return err
+	}
 
 	// Reorder online disks based on erasure distribution order.
 	onlineDisks = getOrderedDisks(xlMeta.Erasure.Distribution, onlineDisks)
@@ -332,12 +339,7 @@ func rename(disks []StorageAPI, srcBucket, srcEntry, dstBucket, dstEntry string,
 		undoRename(disks, srcBucket, srcEntry, dstBucket, dstEntry, isPart, errs)
 		return traceError(errXLWriteQuorum)
 	}
-	// Return on first error, also undo any partially successful rename operations.
-	return reduceErrs(errs, []error{
-		errDiskNotFound,
-		errDiskAccessDenied,
-		errFaultyDisk,
-	})
+	return reduceWriteQuorumErrs(errs, objectOpIgnoredErrs, quorum)
 }
 
 // renamePart - renames a part of the source object to the destination
@@ -382,9 +384,8 @@ func (xl xlObjects) PutObject(bucket string, object string, size int64, data io.
 		metadata = make(map[string]string)
 	}
 
-	uniqueID := getUUID()
-	tempErasureObj := path.Join(tmpMetaPrefix, uniqueID, "part.1")
-	minioMetaTmpBucket := path.Join(minioMetaBucket, tmpMetaPrefix)
+	uniqueID := mustGetUUID()
+	tempErasureObj := path.Join(uniqueID, "part.1")
 	tempObj := uniqueID
 
 	// Initialize md5 writer.
@@ -449,15 +450,15 @@ func (xl xlObjects) PutObject(bucket string, object string, size int64, data io.
 		for _, disk := range onlineDisks {
 			if disk != nil {
 				actualSize := xl.sizeOnDisk(size, xlMeta.Erasure.BlockSize, xlMeta.Erasure.DataBlocks)
-				disk.PrepareFile(minioMetaBucket, tempErasureObj, actualSize)
+				disk.PrepareFile(minioMetaTmpBucket, tempErasureObj, actualSize)
 			}
 		}
 	}
 
 	// Erasure code data and write across all disks.
-	sizeWritten, checkSums, err := erasureCreateFile(onlineDisks, minioMetaBucket, tempErasureObj, teeReader, xlMeta.Erasure.BlockSize, xlMeta.Erasure.DataBlocks, xlMeta.Erasure.ParityBlocks, bitRotAlgo, xl.writeQuorum)
+	sizeWritten, checkSums, err := erasureCreateFile(onlineDisks, minioMetaTmpBucket, tempErasureObj, teeReader, xlMeta.Erasure.BlockSize, xlMeta.Erasure.DataBlocks, xlMeta.Erasure.ParityBlocks, bitRotAlgo, xl.writeQuorum)
 	if err != nil {
-		return ObjectInfo{}, toObjectErr(err, minioMetaBucket, tempErasureObj)
+		return ObjectInfo{}, toObjectErr(err, minioMetaTmpBucket, tempErasureObj)
 	}
 	// Should return IncompleteBody{} error when reader has fewer bytes
 	// than specified in request header.
@@ -517,7 +518,7 @@ func (xl xlObjects) PutObject(bucket string, object string, size int64, data io.
 	}
 
 	// Rename if an object already exists to temporary location.
-	newUniqueID := getUUID()
+	newUniqueID := mustGetUUID()
 	if xl.isObject(bucket, object) {
 		// Delete the temporary copy of the object that existed before this PutObject request.
 		defer xl.deleteObject(minioMetaTmpBucket, newUniqueID)

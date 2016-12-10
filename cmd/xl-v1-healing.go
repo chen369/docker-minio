@@ -74,7 +74,7 @@ func (xl xlObjects) HealBucket(bucket string) error {
 	}
 
 	// Proceed to heal bucket metadata.
-	return healBucketMetadata(xl.storageDisks, bucket)
+	return healBucketMetadata(xl.storageDisks, bucket, xl.readQuorum)
 }
 
 // Heal bucket - create buckets on disks where it does not exist.
@@ -122,11 +122,7 @@ func healBucket(storageDisks []StorageAPI, bucket string, writeQuorum int) error
 	}
 
 	// Verify we have any other errors which should be returned as failure.
-	if reducedErr := reduceErrs(dErrs, []error{
-		errDiskNotFound,
-		errFaultyDisk,
-		errDiskAccessDenied,
-	}); reducedErr != nil {
+	if reducedErr := reduceWriteQuorumErrs(dErrs, bucketOpIgnoredErrs, writeQuorum); reducedErr != nil {
 		return toObjectErr(reducedErr, bucket)
 	}
 	return nil
@@ -134,13 +130,13 @@ func healBucket(storageDisks []StorageAPI, bucket string, writeQuorum int) error
 
 // Heals all the metadata associated for a given bucket, this function
 // heals `policy.json`, `notification.xml` and `listeners.json`.
-func healBucketMetadata(storageDisks []StorageAPI, bucket string) error {
+func healBucketMetadata(storageDisks []StorageAPI, bucket string, readQuorum int) error {
 	healBucketMetaFn := func(metaPath string) error {
 		metaLock := nsMutex.NewNSLock(minioMetaBucket, metaPath)
 		metaLock.RLock()
 		defer metaLock.RUnlock()
 		// Heals the given file at metaPath.
-		if err := healObject(storageDisks, minioMetaBucket, metaPath); err != nil && !isErrObjectNotFound(err) {
+		if err := healObject(storageDisks, minioMetaBucket, metaPath, readQuorum); err != nil && !isErrObjectNotFound(err) {
 			return err
 		} // Success.
 		return nil
@@ -188,7 +184,7 @@ func listBucketNames(storageDisks []StorageAPI) (bucketNames map[string]struct{}
 			continue
 		}
 		// Ignore any disks not found.
-		if isErrIgnored(err, bucketMetadataOpIgnoredErrs) {
+		if isErrIgnored(err, bucketMetadataOpIgnoredErrs...) {
 			continue
 		}
 		break
@@ -204,7 +200,7 @@ func listBucketNames(storageDisks []StorageAPI) (bucketNames map[string]struct{}
 // TODO :-
 // - add support for healing dangling `uploads.json`.
 // - add support for healing dangling `xl.json`.
-func quickHeal(storageDisks []StorageAPI, writeQuorum int) error {
+func quickHeal(storageDisks []StorageAPI, writeQuorum int, readQuorum int) error {
 	// List all bucket names from all disks.
 	bucketNames, err := listBucketNames(storageDisks)
 	if err != nil {
@@ -214,7 +210,7 @@ func quickHeal(storageDisks []StorageAPI, writeQuorum int) error {
 	for bucketName := range bucketNames {
 		// Heal bucket and then proceed to heal bucket metadata.
 		if err = healBucket(storageDisks, bucketName, writeQuorum); err == nil {
-			if err = healBucketMetadata(storageDisks, bucketName); err == nil {
+			if err = healBucketMetadata(storageDisks, bucketName, readQuorum); err == nil {
 				continue
 			}
 			return err
@@ -225,10 +221,10 @@ func quickHeal(storageDisks []StorageAPI, writeQuorum int) error {
 }
 
 // Heals an object only the corrupted/missing erasure blocks.
-func healObject(storageDisks []StorageAPI, bucket string, object string) error {
+func healObject(storageDisks []StorageAPI, bucket string, object string, quorum int) error {
 	partsMetadata, errs := readAllXLMetadata(storageDisks, bucket, object)
-	if err := reduceErrs(errs, nil); err != nil {
-		return toObjectErr(err, bucket, object)
+	if reducedErr := reduceReadQuorumErrs(errs, nil, quorum); reducedErr != nil {
+		return toObjectErr(reducedErr, bucket, object)
 	}
 
 	if !xlShouldHeal(partsMetadata, errs) {
@@ -240,8 +236,11 @@ func healObject(storageDisks []StorageAPI, bucket string, object string) error {
 	latestDisks, modTime := listOnlineDisks(storageDisks, partsMetadata, errs)
 	// List of disks having outdated version of the object or missing object.
 	outDatedDisks := outDatedDisks(storageDisks, partsMetadata, errs)
-	// Latest xlMetaV1 for reference.
-	latestMeta := pickValidXLMeta(partsMetadata, modTime)
+	// Latest xlMetaV1 for reference. If a valid metadata is not present, it is as good as object not found.
+	latestMeta, pErr := pickValidXLMeta(partsMetadata, modTime)
+	if pErr != nil {
+		return pErr
+	}
 
 	for index, disk := range outDatedDisks {
 		// Before healing outdated disks, we need to remove xl.json
@@ -277,7 +276,7 @@ func healObject(storageDisks []StorageAPI, bucket string, object string) error {
 	partsMetadata = getOrderedPartsMetadata(latestMeta.Erasure.Distribution, partsMetadata)
 
 	// We write at temporary location and then rename to fianal location.
-	tmpID := getUUID()
+	tmpID := mustGetUUID()
 
 	// Checksum of the part files. checkSumInfos[index] will contain checksums
 	// of all the part files in the outDatedDisks[index]
@@ -293,7 +292,7 @@ func healObject(storageDisks []StorageAPI, bucket string, object string) error {
 		// Heal the part file.
 		checkSums, err := erasureHealFile(latestDisks, outDatedDisks,
 			bucket, pathJoin(object, partName),
-			minioMetaBucket, pathJoin(tmpMetaPrefix, tmpID, partName),
+			minioMetaTmpBucket, pathJoin(tmpID, partName),
 			partSize, erasure.BlockSize, erasure.DataBlocks, erasure.ParityBlocks, sumInfo.Algorithm)
 		if err != nil {
 			return err
@@ -319,7 +318,7 @@ func healObject(storageDisks []StorageAPI, bucket string, object string) error {
 	}
 
 	// Generate and write `xl.json` generated from other disks.
-	err := writeUniqueXLMetadata(outDatedDisks, minioMetaBucket, pathJoin(tmpMetaPrefix, tmpID), partsMetadata, diskCount(outDatedDisks))
+	err := writeUniqueXLMetadata(outDatedDisks, minioMetaTmpBucket, tmpID, partsMetadata, diskCount(outDatedDisks))
 	if err != nil {
 		return toObjectErr(err, bucket, object)
 	}
@@ -335,7 +334,7 @@ func healObject(storageDisks []StorageAPI, bucket string, object string) error {
 			return traceError(err)
 		}
 		// Attempt a rename now from healed data to final location.
-		err = disk.RenameFile(minioMetaBucket, retainSlash(pathJoin(tmpMetaPrefix, tmpID)), bucket, retainSlash(object))
+		err = disk.RenameFile(minioMetaTmpBucket, retainSlash(tmpID), bucket, retainSlash(object))
 		if err != nil {
 			return traceError(err)
 		}
@@ -364,5 +363,5 @@ func (xl xlObjects) HealObject(bucket, object string) error {
 	defer objectLock.RUnlock()
 
 	// Heal the object.
-	return healObject(xl.storageDisks, bucket, object)
+	return healObject(xl.storageDisks, bucket, object, xl.readQuorum)
 }

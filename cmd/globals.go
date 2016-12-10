@@ -20,6 +20,7 @@ import (
 	"crypto/x509"
 	"time"
 
+	humanize "github.com/dustin/go-humanize"
 	"github.com/fatih/color"
 	"github.com/minio/minio/pkg/objcache"
 )
@@ -31,7 +32,7 @@ const (
 
 // minio configuration related constants.
 const (
-	globalMinioConfigVersion      = "9"
+	globalMinioConfigVersion      = "10"
 	globalMinioConfigDir          = ".minio"
 	globalMinioCertsDir           = "certs"
 	globalMinioCertsCADir         = "CAs"
@@ -40,6 +41,15 @@ const (
 	globalMinioConfigFile         = "config.json"
 	globalMinioCertExpireWarnDays = time.Hour * 24 * 30 // 30 days.
 	// Add new global values here.
+)
+
+const (
+	// Limit fields size (except file) to 1Mib since Policy document
+	// can reach that size according to https://aws.amazon.com/articles/1434
+	maxFormFieldSize = int64(1 * humanize.MiByte)
+
+	// The maximum allowed difference between the request generation time and the server processing time
+	globalMaxSkewTime = 15 * time.Minute
 )
 
 var (
@@ -68,15 +78,6 @@ var (
 )
 
 var (
-	// Limit fields size (except file) to 1Mib since Policy document
-	// can reach that size according to https://aws.amazon.com/articles/1434
-	maxFormFieldSize = int64(1024 * 1024)
-)
-
-var (
-	// The maximum allowed difference between the request generation time and the server processing time
-	globalMaxSkewTime = 15 * time.Minute
-
 	// Keeps the connection active by waiting for following amount of time.
 	// Primarily used in ListenBucketNotification.
 	globalSNSConnAlive = 5 * time.Second

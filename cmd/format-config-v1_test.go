@@ -26,7 +26,7 @@ func genFormatXLValid() []*formatConfigV1 {
 	jbod := make([]string, 8)
 	formatConfigs := make([]*formatConfigV1, 8)
 	for index := range jbod {
-		jbod[index] = getUUID()
+		jbod[index] = mustGetUUID()
 	}
 	for index := range jbod {
 		formatConfigs[index] = &formatConfigV1{
@@ -47,7 +47,7 @@ func genFormatXLInvalidVersion() []*formatConfigV1 {
 	jbod := make([]string, 8)
 	formatConfigs := make([]*formatConfigV1, 8)
 	for index := range jbod {
-		jbod[index] = getUUID()
+		jbod[index] = mustGetUUID()
 	}
 	for index := range jbod {
 		formatConfigs[index] = &formatConfigV1{
@@ -71,7 +71,7 @@ func genFormatXLInvalidFormat() []*formatConfigV1 {
 	jbod := make([]string, 8)
 	formatConfigs := make([]*formatConfigV1, 8)
 	for index := range jbod {
-		jbod[index] = getUUID()
+		jbod[index] = mustGetUUID()
 	}
 	for index := range jbod {
 		formatConfigs[index] = &formatConfigV1{
@@ -95,7 +95,7 @@ func genFormatXLInvalidXLVersion() []*formatConfigV1 {
 	jbod := make([]string, 8)
 	formatConfigs := make([]*formatConfigV1, 8)
 	for index := range jbod {
-		jbod[index] = getUUID()
+		jbod[index] = mustGetUUID()
 	}
 	for index := range jbod {
 		formatConfigs[index] = &formatConfigV1{
@@ -126,7 +126,7 @@ func genFormatXLInvalidJBODCount() []*formatConfigV1 {
 	jbod := make([]string, 7)
 	formatConfigs := make([]*formatConfigV1, 8)
 	for index := range jbod {
-		jbod[index] = getUUID()
+		jbod[index] = mustGetUUID()
 	}
 	for index := range jbod {
 		formatConfigs[index] = &formatConfigV1{
@@ -147,7 +147,7 @@ func genFormatXLInvalidJBOD() []*formatConfigV1 {
 	jbod := make([]string, 8)
 	formatConfigs := make([]*formatConfigV1, 8)
 	for index := range jbod {
-		jbod[index] = getUUID()
+		jbod[index] = mustGetUUID()
 	}
 	for index := range jbod {
 		formatConfigs[index] = &formatConfigV1{
@@ -161,7 +161,7 @@ func genFormatXLInvalidJBOD() []*formatConfigV1 {
 		}
 	}
 	for index := range jbod {
-		jbod[index] = getUUID()
+		jbod[index] = mustGetUUID()
 	}
 	// Corrupt JBOD entries on disk 6 and disk 8.
 	formatConfigs[5].XL.JBOD = jbod
@@ -174,7 +174,7 @@ func genFormatXLInvalidDisks() []*formatConfigV1 {
 	jbod := make([]string, 8)
 	formatConfigs := make([]*formatConfigV1, 8)
 	for index := range jbod {
-		jbod[index] = getUUID()
+		jbod[index] = mustGetUUID()
 	}
 	for index := range jbod {
 		formatConfigs[index] = &formatConfigV1{
@@ -188,8 +188,8 @@ func genFormatXLInvalidDisks() []*formatConfigV1 {
 		}
 	}
 	// Make disk 5 and disk 8 have inconsistent disk uuid's.
-	formatConfigs[4].XL.Disk = getUUID()
-	formatConfigs[7].XL.Disk = getUUID()
+	formatConfigs[4].XL.Disk = mustGetUUID()
+	formatConfigs[7].XL.Disk = mustGetUUID()
 	return formatConfigs
 }
 
@@ -198,7 +198,7 @@ func genFormatXLInvalidDisksOrder() []*formatConfigV1 {
 	jbod := make([]string, 8)
 	formatConfigs := make([]*formatConfigV1, 8)
 	for index := range jbod {
-		jbod[index] = getUUID()
+		jbod[index] = mustGetUUID()
 	}
 	for index := range jbod {
 		formatConfigs[index] = &formatConfigV1{
@@ -559,7 +559,7 @@ func TestSavedUUIDOrder(t *testing.T) {
 	jbod := make([]string, 8)
 	formatConfigs := make([]*formatConfigV1, 8)
 	for index := range jbod {
-		jbod[index] = getUUID()
+		jbod[index] = mustGetUUID()
 		uuidTestCases[index].uuid = jbod[index]
 		uuidTestCases[index].shouldPass = true
 	}
@@ -615,7 +615,7 @@ func TestInitFormatXLErrors(t *testing.T) {
 
 	// All disks API return disk not found
 	for i := 0; i < 16; i++ {
-		d := xl.storageDisks[i].(*posix)
+		d := xl.storageDisks[i].(*retryStorage)
 		testStorageDisks[i] = &naughtyDisk{disk: d, defaultErr: errDiskNotFound}
 	}
 	if err := initFormatXL(testStorageDisks); err != errDiskNotFound {
@@ -624,7 +624,7 @@ func TestInitFormatXLErrors(t *testing.T) {
 
 	// All disks returns disk not found in the fourth call
 	for i := 0; i < 15; i++ {
-		d := xl.storageDisks[i].(*posix)
+		d := xl.storageDisks[i].(*retryStorage)
 		testStorageDisks[i] = &naughtyDisk{disk: d, defaultErr: errDiskNotFound, errors: map[int]error{0: nil, 1: nil, 2: nil}}
 	}
 	if err := initFormatXL(testStorageDisks); err != errDiskNotFound {
@@ -720,9 +720,9 @@ func TestLoadFormatXLErrs(t *testing.T) {
 	xl.storageDisks[11] = nil
 
 	// disk 12 returns faulty disk
-	posixDisk, ok := xl.storageDisks[12].(*posix)
+	posixDisk, ok := xl.storageDisks[12].(*retryStorage)
 	if !ok {
-		t.Fatal("storage disk is not *posix type")
+		t.Fatal("storage disk is not *retryStorage type")
 	}
 	xl.storageDisks[10] = newNaughtyDisk(posixDisk, nil, errFaultyDisk)
 	if _, err = loadFormatXL(xl.storageDisks, 8); err != errFaultyDisk {
@@ -749,9 +749,9 @@ func TestLoadFormatXLErrs(t *testing.T) {
 
 	// disks 0..10 returns disk not found
 	for i := 0; i <= 10; i++ {
-		posixDisk, ok := xl.storageDisks[i].(*posix)
+		posixDisk, ok := xl.storageDisks[i].(*retryStorage)
 		if !ok {
-			t.Fatal("storage disk is not *posix type")
+			t.Fatal("storage disk is not *retryStorage type")
 		}
 		xl.storageDisks[i] = newNaughtyDisk(posixDisk, nil, errDiskNotFound)
 	}
@@ -881,9 +881,9 @@ func TestHealFormatXLCorruptedDisksErrs(t *testing.T) {
 		t.Fatal(err)
 	}
 	xl = obj.(*xlObjects)
-	posixDisk, ok := xl.storageDisks[0].(*posix)
+	posixDisk, ok := xl.storageDisks[0].(*retryStorage)
 	if !ok {
-		t.Fatal("storage disk is not *posix type")
+		t.Fatal("storage disk is not *retryStorage type")
 	}
 	xl.storageDisks[0] = newNaughtyDisk(posixDisk, nil, errFaultyDisk)
 	if err = healFormatXLCorruptedDisks(xl.storageDisks); err != errFaultyDisk {
@@ -1036,9 +1036,9 @@ func TestHealFormatXLFreshDisksErrs(t *testing.T) {
 		t.Fatal(err)
 	}
 	xl = obj.(*xlObjects)
-	posixDisk, ok := xl.storageDisks[0].(*posix)
+	posixDisk, ok := xl.storageDisks[0].(*retryStorage)
 	if !ok {
-		t.Fatal("storage disk is not *posix type")
+		t.Fatal("storage disk is not *retryStorage type")
 	}
 	xl.storageDisks[0] = newNaughtyDisk(posixDisk, nil, errFaultyDisk)
 	if err = healFormatXLFreshDisks(xl.storageDisks); err != errFaultyDisk {

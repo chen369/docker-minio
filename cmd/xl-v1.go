@@ -23,6 +23,7 @@ import (
 	"strings"
 	"sync"
 
+	humanize "github.com/dustin/go-humanize"
 	"github.com/minio/minio/pkg/disk"
 	"github.com/minio/minio/pkg/objcache"
 )
@@ -42,7 +43,7 @@ const (
 	uploadsJSONFile = "uploads.json"
 
 	// 8GiB cache by default.
-	maxCacheSize = 8 * 1024 * 1024 * 1024
+	maxCacheSize = 8 * humanize.GiByte
 
 	// Maximum erasure blocks.
 	maxErasureBlocks = 16
@@ -71,13 +72,7 @@ type xlObjects struct {
 }
 
 // list of all errors that can be ignored in tree walk operation in XL
-var xlTreeWalkIgnoredErrs = []error{
-	errFileNotFound,
-	errVolumeNotFound,
-	errDiskNotFound,
-	errDiskAccessDenied,
-	errFaultyDisk,
-}
+var xlTreeWalkIgnoredErrs = append(baseIgnoredErrs, errDiskAccessDenied, errVolumeNotFound, errFileNotFound)
 
 // newXLObjects - initialize new xl object layer.
 func newXLObjects(storageDisks []StorageAPI) (ObjectLayer, error) {
@@ -117,13 +112,18 @@ func newXLObjects(storageDisks []StorageAPI) (ObjectLayer, error) {
 		objCacheEnabled: !objCacheDisabled,
 	}
 
+	// Initialize meta volume, if volume already exists ignores it.
+	if err = initMetaVolume(storageDisks); err != nil {
+		return nil, fmt.Errorf("Unable to initialize '.minio.sys' meta volume, %s", err)
+	}
+
 	// Figure out read and write quorum based on number of storage disks.
 	// READ and WRITE quorum is always set to (N/2) number of disks.
 	xl.readQuorum = readQuorum
 	xl.writeQuorum = writeQuorum
 
 	// Do a quick heal on the buckets themselves for any discrepancies.
-	if err := quickHeal(xl.storageDisks, xl.writeQuorum); err != nil {
+	if err := quickHeal(xl.storageDisks, xl.writeQuorum, xl.readQuorum); err != nil {
 		return xl, err
 	}
 
